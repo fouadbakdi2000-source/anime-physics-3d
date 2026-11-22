@@ -1,0 +1,871 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no"/>
+<title>Anime Physics Studio 3D</title>
+<style>
+  :root{ --pink:#ff5fa8; }
+  *{box-sizing:border-box;}
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0d16;color:#e8ecff;
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;}
+  #c{display:block;width:100vw;height:100vh;touch-action:none;cursor:grab;}
+  #c:active{cursor:grabbing;}
+  .panel{position:fixed;top:10px;right:10px;width:236px;padding:12px 14px;font-size:13px;
+    background:rgba(16,19,32,.84);backdrop-filter:blur(10px);
+    border:1px solid rgba(255,95,168,.35);border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.55);}
+  .panel h1{margin:0 0 6px;font-size:14px;color:#ff8ec4;letter-spacing:.3px;}
+  .row{display:flex;align-items:center;gap:8px;margin:6px 0;}
+  .row label{flex:1;opacity:.85;font-size:12px;}
+  .row output{width:34px;text-align:left;font-size:11px;opacity:.7;font-variant-numeric:tabular-nums;}
+  input[type=range]{width:104px;accent-color:var(--pink);}
+  .btns{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:10px;}
+  button{background:linear-gradient(180deg,#2a1a33,#1a1226);color:#ffd9ea;cursor:pointer;
+    border:1px solid rgba(255,95,168,.5);border-radius:9px;padding:7px 4px;font-size:12px;transition:.15s;}
+  button:hover{background:linear-gradient(180deg,#3a2244,#241633);border-color:#ff5fa8;}
+  .hint{position:fixed;bottom:10px;left:50%;transform:translateX(-50%);max-width:92vw;
+    padding:6px 14px;font-size:11.5px;text-align:center;line-height:1.6;opacity:.72;
+    background:rgba(0,0,0,.4);border-radius:20px;}
+  #fps{position:fixed;top:10px;left:10px;font-size:11px;opacity:.55;font-variant-numeric:tabular-nums;}
+  @media (max-width:560px){ .panel{width:calc(100vw - 20px);} }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+
+<div class="panel">
+  <h1>Anime Physics Studio</h1>
+  <div class="row"><label>فيزياء</label><input id="sPhys" type="range" min="0" max="2" step="0.01" value="1"><output id="oPhys">1.00</output></div>
+  <div class="row"><label>جاذبية</label><input id="sGrav" type="range" min="0" max="2.5" step="0.01" value="1"><output id="oGrav">1.00</output></div>
+  <div class="row"><label>رياح</label><input id="sWind" type="range" min="0" max="2" step="0.01" value="0.6"><output id="oWind">0.60</output></div>
+  <div class="row"><label>ارتداد</label><input id="sBounce" type="range" min="0.2" max="2.5" step="0.01" value="1"><output id="oBounce">1.00</output></div>
+  <div class="btns">
+    <button id="bWave">موجة 👋</button>
+    <button id="bJump">قفز ▲</button>
+    <button id="bSpin">دوران ↻</button>
+    <button id="bReset">تصفير ⟲</button>
+  </div>
+</div>
+
+<div class="hint">اسحب = تدوير الكاميرا · عجلة/قرص = تقريب · انقر = دفعة فيزيائية · Space = قفز · W = موجة</div>
+<div id="fps">--</div>
+
+<script>
+(function(){
+"use strict";
+
+var canvas = document.getElementById('c');
+var gl = canvas.getContext('webgl2', {antialias:true, alpha:false});
+if(!gl){
+  document.body.innerHTML = '<div style="color:#fff;padding:24px;font-size:16px">WebGL2 غير مدعوم في هذا المتصفح.</div>';
+  return;
+}
+
+/* ============================ shaders ============================ */
+var VS = [
+'#version 300 es',
+'layout(location=0) in vec3 aPos;',
+'layout(location=1) in vec3 aNor;',
+'uniform mat4 uModel;',
+'uniform mat4 uVP;',
+'out vec3 vN;',
+'out vec3 vW;',
+'void main(){',
+'  vec4 w = uModel * vec4(aPos,1.0);',
+'  vW = w.xyz;',
+'  vN = mat3(uModel) * aNor;',
+'  gl_Position = uVP * w;',
+'}'
+].join('\n');
+
+var FS = [
+'#version 300 es',
+'precision highp float;',
+'in vec3 vN;',
+'in vec3 vW;',
+'uniform vec3 uColor;',
+'uniform vec3 uEye;',
+'out vec4 frag;',
+'void main(){',
+'  vec3 N = normalize(vN);',
+'  vec3 V = normalize(uEye - vW);',
+'  vec3 L1 = normalize(vec3(0.45,0.92,0.62));',
+'  vec3 L2 = normalize(vec3(-0.70,0.28,-0.62));',
+'  float d1 = max(dot(N,L1),0.0);',
+'  float d2 = max(dot(N,L2),0.0);',
+'  float wrap = max(dot(N,L1)*0.5+0.5,0.0);',
+'  vec3 col = uColor * (0.20 + 0.60*wrap + 0.20*d2);',
+'  vec3 H = normalize(L1+V);',
+'  col += vec3(1.0) * pow(max(dot(N,H),0.0),54.0) * 0.55;',
+'  float rim = pow(1.0-max(dot(N,V),0.0),3.0);',
+'  col += vec3(0.42,0.60,1.0) * rim * 0.45;',
+'  frag = vec4(pow(max(col,0.0), vec3(0.4545)), 1.0);',
+'}'
+].join('\n');
+
+function compile(type, src){
+  var s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){
+    console.error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+
+var prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)){
+  console.error(gl.getProgramInfoLog(prog));
+}
+gl.useProgram(prog);
+
+var uModel = gl.getUniformLocation(prog, 'uModel');
+var uVP    = gl.getUniformLocation(prog, 'uVP');
+var uColor = gl.getUniformLocation(prog, 'uColor');
+var uEye   = gl.getUniformLocation(prog, 'uEye');
+
+gl.enable(gl.DEPTH_TEST);
+gl.disable(gl.CULL_FACE);
+
+/* ============================ math ============================ */
+function vsub(a,b){ return [a[0]-b[0], a[1]-b[1], a[2]-b[2]]; }
+function vadd(a,b){ return [a[0]+b[0], a[1]+b[1], a[2]+b[2]]; }
+function vmul(a,s){ return [a[0]*s, a[1]*s, a[2]*s]; }
+function vdot(a,b){ return a[0]*b[0]+a[1]*b[1]+a[2]*b[2]; }
+function vcross(a,b){ return [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]]; }
+function vlen(a){ return Math.sqrt(a[0]*a[0]+a[1]*a[1]+a[2]*a[2]); }
+function vnorm(a){ var l = vlen(a) || 1; return [a[0]/l, a[1]/l, a[2]/l]; }
+
+function mIdent(){ return new Float32Array([1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]); }
+function mMul(a,b){
+  var o = new Float32Array(16);
+  for(var i=0;i<4;i++){
+    for(var j=0;j<4;j++){
+      o[j+4*i] = a[j]*b[i*4] + a[4+j]*b[i*4+1] + a[8+j]*b[i*4+2] + a[12+j]*b[i*4+3];
+    }
+  }
+  return o;
+}
+function mTranslate(x,y,z){ var m=mIdent(); m[12]=x; m[13]=y; m[14]=z; return m; }
+function mScale(x,y,z){ var m=mIdent(); m[0]=x; m[5]=y; m[10]=z; return m; }
+function mRotX(a){ var c=Math.cos(a), s=Math.sin(a); var m=mIdent(); m[5]=c; m[6]=s; m[9]=-s; m[10]=c; return m; }
+function mRotY(a){ var c=Math.cos(a), s=Math.sin(a); var m=mIdent(); m[0]=c; m[2]=-s; m[8]=s; m[10]=c; return m; }
+function mRotZ(a){ var c=Math.cos(a), s=Math.sin(a); var m=mIdent(); m[0]=c; m[1]=s; m[4]=-s; m[5]=c; return m; }
+function mPersp(fovy, asp, n, f){
+  var t = 1/Math.tan(fovy/2), nf = 1/(n-f);
+  return new Float32Array([t/asp,0,0,0, 0,t,0,0, 0,0,(f+n)*nf,-1, 0,0,2*f*n*nf,0]);
+}
+function mLookAt(e,c,up){
+  var z = vnorm(vsub(e,c));
+  var x = vnorm(vcross(up,z));
+  var y = vcross(z,x);
+  return new Float32Array([
+    x[0],y[0],z[0],0,
+    x[1],y[1],z[1],0,
+    x[2],y[2],z[2],0,
+    -vdot(x,e), -vdot(y,e), -vdot(z,e), 1
+  ]);
+}
+
+/* ============================ meshes ============================ */
+function makeMesh(pos, nor, idx){
+  var vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  var pb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, pb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+  var nb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, nb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(nor), gl.STATIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+  var ib = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+
+  gl.bindVertexArray(null);
+  return {vao:vao, ib:ib, count:idx.length};
+}
+
+function makeDynMesh(pos, nor, idx){
+  var vao = gl.createVertexArray();
+  gl.bindVertexArray(vao);
+
+  var pb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, pb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(pos), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(0);
+  gl.vertexAttribPointer(0, 3, gl.FLOAT, false, 0, 0);
+
+  var nb = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, nb);
+  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(nor), gl.DYNAMIC_DRAW);
+  gl.enableVertexAttribArray(1);
+  gl.vertexAttribPointer(1, 3, gl.FLOAT, false, 0, 0);
+
+  var ib = gl.createBuffer();
+  gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ib);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+
+  gl.bindVertexArray(null);
+  return {
+    vao:vao, ib:ib, count:idx.length, pb:pb, nb:nb,
+    update:function(p, n){
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.pb);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(p));
+      gl.bindBuffer(gl.ARRAY_BUFFER, this.nb);
+      gl.bufferSubData(gl.ARRAY_BUFFER, 0, new Float32Array(n));
+    }
+  };
+}
+
+function sphereMesh(lat, lon, phiStart, phiLen){
+  var pos = [], nor = [], idx = [];
+  var i, j;
+  var ps = (phiStart === undefined) ? 0 : phiStart;
+  var pl = (phiLen === undefined) ? Math.PI : phiLen;
+  for(i=0;i<=lat;i++){
+    var phi = ps + (i/lat)*pl;
+    var sp = Math.sin(phi), cp = Math.cos(phi);
+    for(j=0;j<=lon;j++){
+      var th = (j/lon)*Math.PI*2;
+      var x = sp*Math.cos(th), y = cp, z = sp*Math.sin(th);
+      pos.push(x,y,z);
+      nor.push(x,y,z);
+    }
+  }
+  for(i=0;i<lat;i++){
+    for(j=0;j<lon;j++){
+      var a = i*(lon+1)+j, b = a+lon+1;
+      idx.push(a,b,a+1, a+1,b,b+1);
+    }
+  }
+  return makeMesh(pos, nor, idx);
+}
+
+function cylMesh(seg, r1, r2){
+  var pos = [], nor = [], idx = [];
+  var i;
+  var slope = (r1 - r2);
+  for(var ring=0; ring<2; ring++){
+    var y = ring;
+    var r = ring ? r2 : r1;
+    for(i=0;i<=seg;i++){
+      var th = (i/seg)*Math.PI*2;
+      var c = Math.cos(th), s = Math.sin(th);
+      pos.push(c*r, y, s*r);
+      var nl = Math.sqrt(1 + slope*slope);
+      nor.push(c/nl, slope/nl, s/nl);
+    }
+  }
+  for(i=0;i<seg;i++){
+    var a = i, b = i+seg+1;
+    idx.push(a,b,a+1, a+1,b,b+1);
+  }
+  var cb = pos.length/3;
+  pos.push(0,0,0); nor.push(0,-1,0);
+  for(i=0;i<seg;i++){ idx.push(cb, i+1, i); }
+  var ct = pos.length/3;
+  pos.push(0,1,0); nor.push(0,1,0);
+  var off = seg+1;
+  for(i=0;i<seg;i++){ idx.push(ct, off+i, off+i+1); }
+  return makeMesh(pos, nor, idx);
+}
+
+function discMesh(seg){
+  var pos = [], nor = [], idx = [];
+  pos.push(0,0,0); nor.push(0,1,0);
+  for(var i=0;i<=seg;i++){
+    var th = (i/seg)*Math.PI*2;
+    pos.push(Math.cos(th), 0, Math.sin(th));
+    nor.push(0,1,0);
+  }
+  for(var j=1;j<=seg;j++){ idx.push(0, j, j+1); }
+  return makeMesh(pos, nor, idx);
+}
+
+/* ============================ geometry set ============================ */
+var G = {};
+G.sphere   = sphereMesh(20, 26, 0, Math.PI);
+G.sphereLo = sphereMesh(10, 14, 0, Math.PI);
+G.hairCap  = sphereMesh(14, 22, 0, Math.PI*0.62);
+G.cyl      = cylMesh(18, 1, 1);
+G.cylTap   = cylMesh(14, 1, 0.55);
+G.disc     = discMesh(40);
+
+var SEG = 22;
+var SKIRT_TOP_Y = 1.00, SKIRT_HEM_Y = 0.72, SKIRT_TOP_R = 0.165, SKIRT_HEM_R = 0.335;
+var skirtPos = new Array((SEG+1)*2*3).fill(0);
+var skirtNor = new Array((SEG+1)*2*3).fill(0);
+var skirtIdx = [];
+(function(){
+  for(var i=0;i<SEG;i++){
+    var a = i, b = i+SEG+1;
+    skirtIdx.push(a,b,a+1, a+1,b,b+1);
+  }
+})();
+var skirtMesh = makeDynMesh(skirtPos, skirtNor, skirtIdx);
+
+/* ============================ state ============================ */
+var state = {
+  time: 0,
+  phys: 1.0,
+  grav: 1.0,
+  wind: 0.6,
+  bounce: 1.0,
+  yaw: 0.6,
+  pitch: 0.12,
+  dist: 3.15,
+  charYaw: 0.0,
+  spin: 0.0,
+  jumpY: 0.0,
+  jumpV: 0.0,
+  squash: 0.0,
+  waveT: 0.0,
+  waveAmt: 0.0,
+  boop: 0.0
+};
+
+var COL = {
+  skin:  [1.00, 0.855, 0.775],
+  skinD: [0.94, 0.760, 0.690],
+  hair:  [1.00, 0.470, 0.760],
+  hairD: [0.880, 0.330, 0.620],
+  dress: [0.870, 0.890, 1.000],
+  dressD:[0.640, 0.590, 0.880],
+  accent:[1.000, 0.320, 0.560],
+  dark:  [0.180, 0.160, 0.260],
+  eye:   [0.320, 0.230, 0.480],
+  white: [1.000, 1.000, 1.000],
+  mouth: [0.780, 0.330, 0.400],
+  shoe:  [0.320, 0.280, 0.460],
+  shadow:[0.055, 0.060, 0.105],
+  floor: [0.075, 0.085, 0.140]
+};
+
+/* ============================ hair physics ============================ */
+var HAIR_N = 8;
+var HAIR_REST = 0.058;
+var hair = [];
+function resetHair(){
+  hair = [];
+  for(var i=0;i<=HAIR_N;i++){
+    var p = [0.0, 1.66 - i*HAIR_REST*0.85, -0.10 - i*HAIR_REST*0.55];
+    hair.push({p:p, pp:p.slice()});
+  }
+}
+resetHair();
+
+function hairAttach(){
+  var c = Math.cos(state.charYaw), s = Math.sin(state.charYaw);
+  var lx = 0.0, ly = 1.655, lz = -0.085;
+  var x = lx*c + lz*s;
+  var z = -lx*s + lz*c;
+  return [x, ly + state.jumpY, z];
+}
+
+function updateHair(dt){
+  var t = state.time;
+  var i, k;
+  var attach = hairAttach();
+
+  hair[0].p[0]=attach[0]; hair[0].p[1]=attach[1]; hair[0].p[2]=attach[2];
+  hair[0].pp[0]=attach[0]; hair[0].pp[1]=attach[1]; hair[0].pp[2]=attach[2];
+
+  var g = -9.8 * state.grav * 0.0016;
+  var w = state.wind * 0.00042;
+  var damp = 0.965;
+
+  for(i=1;i<=HAIR_N;i++){
+    var p = hair[i];
+    var vx = (p.p[0]-p.pp[0])*damp;
+    var vy = (p.p[1]-p.pp[1])*damp;
+    var vz = (p.p[2]-p.pp[2])*damp;
+    p.pp[0]=p.p[0]; p.pp[1]=p.p[1]; p.pp[2]=p.p[2];
+    var fx = Math.sin(t*1.9 + i*0.7) * w;
+    var fz = Math.cos(t*1.45 + i*0.9) * w * 0.7;
+    p.p[0] += vx + fx;
+    p.p[1] += vy + g;
+    p.p[2] += vz + fz;
+  }
+
+  for(k=0;k<3;k++){
+    for(i=0;i<HAIR_N;i++){
+      var a = hair[i].p, b = hair[i+1].p;
+      var d = vsub(b,a);
+      var L = vlen(d) || 1e-5;
+      var diff = (L - HAIR_REST) / L;
+      if(i === 0){
+        b[0] -= d[0]*diff; b[1] -= d[1]*diff; b[2] -= d[2]*diff;
+      } else {
+        var h = 0.5*diff;
+        a[0] += d[0]*h; a[1] += d[1]*h; a[2] += d[2]*h;
+        b[0] -= d[0]*h; b[1] -= d[1]*h; b[2] -= d[2]*h;
+      }
+    }
+    for(i=1;i<=HAIR_N;i++){
+      var q = hair[i].p;
+      var dx = q[0], dz = q[2] + 0.02;
+      var rad = Math.sqrt(dx*dx + dz*dz);
+      if(q[1] > 1.05 && q[1] < 1.75 && rad < 0.115 && rad > 1e-4){
+        var push = (0.115 - rad);
+        q[0] += (dx/rad) * push;
+        q[2] += (dz/rad) * push;
+      }
+      if(q[1] < 0.03){ q[1] = 0.03; }
+    }
+  }
+}
+
+/* ============================ cloth physics ============================ */
+var cloth = [];
+for(var ci=0; ci<SEG; ci++){ cloth.push({o:0, v:0, ph: Math.random()*6.28}); }
+
+function updateCloth(dt){
+  var t = state.time;
+  var stiff = 26.0 * state.bounce;
+  var damp = 3.4;
+  for(var i=0;i<SEG;i++){
+    var c = cloth[i];
+    var a = (i/SEG)*Math.PI*2;
+    var force = Math.sin(t*1.6 + c.ph) * state.wind * 0.55;
+    force += Math.sin(t*3.1 + a*2.0) * state.boop * 0.9;
+    c.v += (-c.o * stiff - c.v * damp + force) * dt;
+    c.o += c.v * dt;
+    if(c.o > 0.30) c.o = 0.30;
+    if(c.o < -0.09) c.o = -0.09;
+  }
+}
+
+function buildSkirt(){
+  var t = state.time;
+  for(var ring=0; ring<2; ring++){
+    for(var i=0;i<=SEG;i++){
+      var idx = (ring*(SEG+1) + i) * 3;
+      var a = (i/SEG)*Math.PI*2;
+      var ca = Math.cos(a), sa = Math.sin(a);
+      var off = 0, lift = 0;
+      if(ring === 1){
+        off = cloth[i % SEG].o;
+        lift = Math.abs(cloth[i % SEG].o) * 0.22;
+      }
+      var r = (ring === 0 ? SKIRT_TOP_R : SKIRT_HEM_R) + off;
+      skirtPos[idx]   = ca * r;
+      skirtPos[idx+1] = (ring === 0 ? SKIRT_TOP_Y : SKIRT_HEM_Y) + lift;
+      skirtPos[idx+2] = sa * r * 0.94;
+      skirtNor[idx]   = ca;
+      skirtNor[idx+1] = 0.42;
+      skirtNor[idx+2] = sa;
+    }
+  }
+  skirtMesh.update(skirtPos, skirtNor);
+}
+
+/* ============================ body build ============================ */
+var drawList = [];
+
+function push(mesh, m, color){
+  drawList.push({mesh:mesh, m:m, color:color});
+}
+
+function sphereAt(px,py,pz, sx,sy,sz, color){
+  var m = mTranslate(px,py,pz);
+  m = mMul(m, mScale(sx,sy,sz));
+  push(G.sphere, m, color);
+}
+
+function capsule(ax,ay,az, bx,by,bz, r, color, mesh){
+  var a = [ax,ay,az], b = [bx,by,bz];
+  var d = vsub(b,a);
+  var L = vlen(d) || 1e-4;
+  var y = vnorm(d);
+  var ref = (Math.abs(y[1]) > 0.9) ? [0,0,1] : [0,1,0];
+  var x = vnorm(vcross(ref, y));
+  var z = vcross(x, y);
+  var m = new Float32Array([
+    x[0]*r, x[1]*r, x[2]*r, 0,
+    y[0]*L, y[1]*L, y[2]*L, 0,
+    z[0]*r, z[1]*r, z[2]*r, 0,
+    a[0], a[1], a[2], 1
+  ]);
+  push(mesh || G.cyl, m, color);
+  sphereAt(a[0],a[1],a[2], r,r,r, color);
+  sphereAt(b[0],b[1],b[2], r*0.92,r*0.92,r*0.92, color);
+}
+
+function rotZVec(v, a){
+  var c = Math.cos(a), s = Math.sin(a);
+  return [v[0]*c - v[1]*s, v[0]*s + v[1]*c, v[2]];
+}
+
+function buildScene(){
+  drawList = [];
+  var t = state.time;
+
+  var cy = Math.cos(state.charYaw), sy = Math.sin(state.charYaw);
+  function P(x,y,z){ return [x*cy + z*sy, y + state.jumpY, -x*sy + z*cy]; }
+  function R(v){ return [v[0]*cy + v[2]*sy, v[1], -v[0]*sy + v[2]*cy]; }
+
+  var breathe = Math.sin(t*1.5) * 0.006;
+  var sway = Math.sin(t*0.9) * 0.012;
+  var hipY = 0.93 + breathe*0.5;
+  var bob = Math.sin(t*1.5)*0.004;
+
+  /* ---- shadow / floor ---- */
+  var sm = mTranslate(0, 0.006, 0);
+  sm = mMul(sm, mScale(0.42, 1, 0.42*0.94));
+  push(G.disc, sm, COL.shadow);
+
+  var fm = mTranslate(0, -0.004, 0);
+  fm = mMul(fm, mScale(2.6, 1, 2.6));
+  push(G.disc, fm, COL.floor);
+
+  /* ---- legs ---- */
+  var legSwing = Math.sin(t*1.5) * 0.008;
+  for(var sgn=-1; sgn<=1; sgn+=2){
+    var hx = sgn*0.088 + sway*0.4;
+    var h = P(hx, hipY, 0);
+    var k = P(hx*1.06 + legSwing, 0.50, 0.012);
+    var a = P(hx*1.04, 0.075, 0.005);
+    capsule(h[0],h[1],h[2], k[0],k[1],k[2], 0.058, COL.skinD);
+    capsule(k[0],k[1],k[2], a[0],a[1],a[2], 0.043, COL.skin);
+    sphereAt(a[0], a[1]-0.02, a[2]+0.03, 0.052, 0.032, 0.078, COL.shoe);
+  }
+
+  /* ---- hips / torso ---- */
+  var hp = P(0, hipY, 0);
+  sphereAt(hp[0], hp[1], hp[2], 0.150, 0.112, 0.118, COL.dressD);
+
+  var waist = P(0, hipY + 0.10, 0);
+  sphereAt(waist[0], waist[1], waist[2], 0.124, 0.088, 0.100, COL.dress);
+
+  var chestY = hipY + 0.245 + breathe;
+  var ch = P(0, chestY, 0);
+  sphereAt(ch[0], ch[1], ch[2], 0.150, 0.135, 0.108, COL.dress);
+
+  var jig = state.boop * 0.012 * Math.sin(t*16.0) * state.bounce;
+  for(var bsgn=-1; bsgn<=1; bsgn+=2){
+    var cp = P(bsgn*0.062, chestY + 0.035 + jig, 0.062);
+    sphereAt(cp[0], cp[1], cp[2], 0.070, 0.064, 0.062, COL.dress);
+  }
+
+  var rib = P(0, chestY + 0.10, 0.072);
+  sphereAt(rib[0], rib[1], rib[2], 0.030, 0.024, 0.018, COL.accent);
+
+  /* ---- shoulders / neck / head ---- */
+  var shY = hipY + 0.365;
+  for(var s2=-1; s2<=1; s2+=2){
+    var sp = P(s2*0.152, shY, 0);
+    sphereAt(sp[0], sp[1], sp[2], 0.056, 0.054, 0.054, COL.dress);
+  }
+
+  var nk = P(0, shY + 0.065, 0);
+  capsule(nk[0], nk[1]-0.03, nk[2], nk[0], nk[1]+0.06, nk[2], 0.034, COL.skinD, G.cyl);
+
+  var headY = shY + 0.175 + bob;
+  var hd = P(0, headY, 0);
+  sphereAt(hd[0], hd[1], hd[2], 0.113, 0.124, 0.113, COL.skin);
+
+  /* ---- hair ---- */
+  var hc = P(0, headY + 0.022, -0.012);
+  var hm = mTranslate(hc[0], hc[1], hc[2]);
+  hm = mMul(hm, mRotY(state.charYaw));
+  hm = mMul(hm, mRotX(-0.16));
+  hm = mMul(hm, mScale(0.121, 0.130, 0.123));
+  push(G.hairCap, hm, COL.hair);
+
+  var bh = P(0, headY - 0.045, -0.070);
+  sphereAt(bh[0], bh[1], bh[2], 0.105, 0.105, 0.088, COL.hairD);
+
+  for(var s3=-1; s3<=1; s3+=2){
+    var lk = P(s3*0.098, headY - 0.055, 0.028);
+    sphereAt(lk[0], lk[1], lk[2], 0.028, 0.062, 0.030, COL.hair);
+  }
+
+  /* ---- face ---- */
+  var fz = 0.098;
+  for(var s4=-1; s4<=1; s4+=2){
+    var ep = P(s4*0.045, headY + 0.008, fz);
+    sphereAt(ep[0], ep[1], ep[2], 0.030, 0.036, 0.016, COL.white);
+    var ep2 = P(s4*0.045, headY + 0.006, fz + 0.012);
+    sphereAt(ep2[0], ep2[1], ep2[2], 0.021, 0.026, 0.012, COL.eye);
+    var ep3 = P(s4*0.038, headY + 0.020, fz + 0.020);
+    sphereAt(ep3[0], ep3[1], ep3[2], 0.008, 0.009, 0.006, COL.white);
+  }
+  var mp = P(0, headY - 0.045, fz + 0.004);
+  sphereAt(mp[0], mp[1], mp[2], 0.017, 0.011, 0.010, COL.mouth);
+
+  /* ---- arms ---- */
+  var wave = state.waveAmt;
+  for(var s5=-1; s5<=1; s5+=2){
+    var sh = P(s5*0.152, shY - 0.01, 0);
+    var dir1 = [s5*0.30, -1.0, 0.02];
+    var ang = 0.0;
+    if(s5 > 0 && wave > 0.001){
+      ang = wave * (2.35 + 0.28*Math.sin(t*9.0));
+    } else {
+      ang = s5 * 0.06 + Math.sin(t*1.2 + (s5>0?0:1.6)) * 0.03;
+    }
+    dir1 = rotZVec(dir1, ang);
+    dir1 = vnorm(dir1);
+    var L1 = 0.255;
+    var el = [sh[0] + dir1[0]*L1, sh[1] + dir1[1]*L1, sh[2] + dir1[2]*L1];
+
+    var dir2 = vnorm([s5*0.10 + dir1[0]*0.35, -1.0, 0.10]);
+    if(s5 > 0 && wave > 0.001){
+      dir2 = rotZVec(dir2, wave * (0.55*Math.sin(t*11.0) + 0.35));
+      dir2 = vnorm(dir2);
+    }
+    var L2 = 0.235;
+    var hd2 = [el[0] + dir2[0]*L2, el[1] + dir2[1]*L2, el[2] + dir2[2]*L2];
+
+    capsule(sh[0],sh[1],sh[2], el[0],el[1],el[2], 0.042, COL.skin);
+    capsule(el[0],el[1],el[2], hd2[0],hd2[1],hd2[2], 0.035, COL.skin);
+    sphereAt(hd2[0], hd2[1], hd2[2], 0.040, 0.042, 0.038, COL.skin);
+  }
+
+  /* ---- ponytail ---- */
+  for(var i=0;i<HAIR_N;i++){
+    var p0 = hair[i].p, p1 = hair[i+1].p;
+    var ra = 0.050 * (1.0 - i/HAIR_N*0.55);
+    var rb = 0.050 * (1.0 - (i+1)/HAIR_N*0.55);
+    var d = vsub(p1, p0);
+    var L = vlen(d) || 1e-4;
+    var y = vnorm(d);
+    var ref = (Math.abs(y[1]) > 0.9) ? [0,0,1] : [0,1,0];
+    var x = vnorm(vcross(ref, y));
+    var z = vcross(x, y);
+    var mm = new Float32Array([
+      x[0]*ra, x[1]*ra, x[2]*ra, 0,
+      y[0]*L,  y[1]*L,  y[2]*L,  0,
+      z[0]*ra, z[1]*ra, z[2]*ra, 0,
+      p0[0], p0[1], p0[2], 1
+    ]);
+    push(G.cylTap, mm, (i < 2) ? COL.hair : COL.hairD);
+    sphereAt(p0[0], p0[1], p0[2], ra, ra, ra, COL.hair);
+  }
+  var lastP = hair[HAIR_N].p;
+  sphereAt(lastP[0], lastP[1], lastP[2], 0.026, 0.030, 0.026, COL.hairD);
+
+  /* ---- skirt ---- */
+  buildSkirt();
+  var skm = mTranslate(0, state.jumpY, 0);
+  skm = mMul(skm, mRotY(state.charYaw));
+  drawList.push({mesh: skirtMesh, m: skm, color: COL.dressD, dyn:true});
+
+  return drawList;
+}
+
+/* ============================ interaction ============================ */
+function boop(strength){
+  state.boop = Math.min(1.4, state.boop + (strength || 1.0));
+  state.squash = 0.5;
+  var c = Math.cos(state.charYaw), s = Math.sin(state.charYaw);
+  for(var i=1;i<=HAIR_N;i++){
+    var h = hair[i];
+    var f = (i/HAIR_N);
+    h.pp[0] -= (0.010 * f) * (Math.random() - 0.5) * 2;
+    h.pp[1] -= (0.004 * f);
+    h.pp[2] -= (0.012 * f);
+  }
+  for(var j=0;j<SEG;j++){
+    var a = (j/SEG)*Math.PI*2;
+    cloth[j].v += Math.sin(a * 2.0 + Math.random()) * 0.9;
+  }
+}
+
+function doJump(){
+  if(state.jumpY <= 0.0001){
+    state.jumpV = 2.35;
+  }
+}
+
+function doWave(){
+  state.waveT = 1.6;
+}
+
+function doSpin(){
+  state.spin = 3.2;
+}
+
+function resetAll(){
+  state.charYaw = 0; state.spin = 0;
+  state.jumpY = 0; state.jumpV = 0;
+  state.boop = 0; state.squash = 0; state.waveT = 0; state.waveAmt = 0;
+  for(var j=0;j<SEG;j++){ cloth[j].o = 0; cloth[j].v = 0; }
+  resetHair();
+}
+
+var dragging = false, moved = 0, lastX = 0, lastY = 0;
+
+canvas.addEventListener('pointerdown', function(e){
+  dragging = true; moved = 0; lastX = e.clientX; lastY = e.clientY;
+  try { canvas.setPointerCapture(e.pointerId); } catch(err){}
+});
+
+canvas.addEventListener('pointermove', function(e){
+  if(!dragging) return;
+  var dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  moved += Math.abs(dx) + Math.abs(dy);
+  state.yaw -= dx * 0.0085;
+  state.pitch = Math.max(-0.55, Math.min(1.05, state.pitch + dy * 0.006));
+});
+
+function endPointer(e){
+  if(!dragging) return;
+  dragging = false;
+  if(moved < 9){ boop(1.0); }
+}
+canvas.addEventListener('pointerup', endPointer);
+canvas.addEventListener('pointercancel', endPointer);
+
+canvas.addEventListener('wheel', function(e){
+  e.preventDefault();
+  state.dist = Math.max(1.4, Math.min(7.0, state.dist + e.deltaY * 0.0016));
+}, {passive:false});
+
+window.addEventListener('keydown', function(e){
+  if(e.code === 'Space'){ e.preventDefault(); doJump(); }
+  else if(e.key === 'w' || e.key === 'W' || e.key === 'KeyW'){ doWave(); }
+  else if(e.key === 'r' || e.key === 'R'){ resetAll(); }
+});
+
+function bindSlider(id, outId, key){
+  var s = document.getElementById(id);
+  var o = document.getElementById(outId);
+  s.addEventListener('input', function(){
+    state[key] = parseFloat(s.value);
+    o.textContent = state[key].toFixed(2);
+  });
+  o.textContent = parseFloat(s.value).toFixed(2);
+}
+bindSlider('sPhys','oPhys','phys');
+bindSlider('sGrav','oGrav','grav');
+bindSlider('sWind','oWind','wind');
+bindSlider('sBounce','oBounce','bounce');
+
+document.getElementById('bWave').addEventListener('click', doWave);
+document.getElementById('bJump').addEventListener('click', doJump);
+document.getElementById('bSpin').addEventListener('click', doSpin);
+document.getElementById('bReset').addEventListener('click', resetAll);
+
+/* ============================ resize ============================ */
+function resize(){
+  var dpr = Math.min(window.devicePixelRatio || 1, 2);
+  var w = Math.floor(canvas.clientWidth * dpr);
+  var h = Math.floor(canvas.clientHeight * dpr);
+  if(canvas.width !== w || canvas.height !== h){
+    canvas.width = w;
+    canvas.height = h;
+  }
+  gl.viewport(0, 0, canvas.width, canvas.height);
+}
+window.addEventListener('resize', resize);
+
+/* ============================ main loop ============================ */
+var lastT = performance.now();
+var fpsAcc = 0, fpsFrames = 0;
+var fpsEl = document.getElementById('fps');
+
+function frame(now){
+  var dt = Math.min(0.05, (now - lastT) / 1000) || 0.016;
+  lastT = now;
+  state.time += dt;
+  var t = state.time;
+
+  if(state.jumpY > 0 || state.jumpV > 0){
+    state.jumpV -= 9.8 * dt * 0.55;
+    state.jumpY += state.jumpV * dt;
+    if(state.jumpY <= 0){
+      state.jumpY = 0;
+      if(state.jumpV < -0.4){
+        state.boop = Math.min(1.4, state.boop + Math.abs(state.jumpV) * 0.32);
+        state.squash = Math.min(1.0, Math.abs(state.jumpV) * 0.3);
+        for(var j=0;j<SEG;j++){
+          cloth[j].v += Math.sin((j/SEG)*Math.PI*2 * 2.0) * Math.abs(state.jumpV) * 0.55;
+        }
+      }
+      state.jumpV = 0;
+    }
+  }
+
+  if(state.waveT > 0){
+    state.waveT -= dt;
+    state.waveAmt = Math.min(1, state.waveAmt + dt * 5.0);
+  } else {
+    state.waveAmt = Math.max(0, state.waveAmt - dt * 4.0);
+  }
+
+  if(Math.abs(state.spin) > 0.001){
+    state.charYaw += state.spin * dt;
+    state.spin *= 0.965;
+  } else {
+    state.spin = 0;
+    state.charYaw += Math.sin(t * 0.35) * dt * 0.10;
+  }
+
+  state.boop *= Math.pow(0.02, dt);
+  if(state.boop < 0.002) state.boop = 0;
+  state.squash *= Math.pow(0.02, dt);
+  if(state.squash < 0.002) state.squash = 0;
+
+  var steps = 2;
+  var sdt = dt / steps;
+  for(var s=0;s<steps;s++){
+    updateHair(sdt);
+    updateCloth(sdt);
+  }
+
+  var cp = Math.cos(state.pitch), sp = Math.sin(state.pitch);
+  var eye = [
+    Math.sin(state.yaw) * state.dist * cp,
+    0.95 + sp * state.dist * 0.85,
+    Math.cos(state.yaw) * state.dist * cp
+  ];
+  var target = [0, 0.95 + state.jumpY * 0.35, 0];
+  var view = mLookAt(eye, target, [0,1,0]);
+  var proj = mPersp(0.95, canvas.width / Math.max(1, canvas.height), 0.05, 60);
+  var vp = mMul(proj, view);
+
+  gl.clearColor(0.043, 0.051, 0.086, 1.0);
+  gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+  gl.useProgram(prog);
+  gl.uniformMatrix4fv(uVP, false, vp);
+  gl.uniform3fv(uEye, new Float32Array(eye));
+
+  var list = buildScene();
+  for(var i=0;i<list.length;i++){
+    var it = list[i];
+    gl.uniformMatrix4fv(uModel, false, it.m);
+    gl.uniform3fv(uColor, new Float32Array(it.color));
+    gl.bindVertexArray(it.mesh.vao);
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, it.mesh.ib);
+    gl.drawElements(gl.TRIANGLES, it.mesh.count, gl.UNSIGNED_SHORT, 0);
+  }
+  gl.bindVertexArray(null);
+
+  fpsAcc += dt; fpsFrames++;
+  if(fpsAcc >= 0.5){
+    fpsEl.textContent = Math.round(fpsFrames / fpsAcc) + ' FPS';
+    fpsAcc = 0; fpsFrames = 0;
+  }
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
