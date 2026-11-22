@@ -14,7 +14,4 @@
     <preference name="Fullscreen" value="false" />
     <preference name="android-minSdkVersion" value="24" />
     <preference name="android-targetSdkVersion" value="34" />
-    <platform name="android">
-        <icon src="www/icon.png" />
-    </platform>
 </widget>
